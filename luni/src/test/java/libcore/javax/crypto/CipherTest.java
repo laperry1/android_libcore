@@ -3203,6 +3203,28 @@ public final class CipherTest extends TestCase {
         }
     }
 
+    public void test_DefaultGCMTagSizeAlgorithmParameterSpec() throws Exception {
+        final String AES = "AES";
+        final String AES_GCM = "AES/GCM/NoPadding";
+        byte[] input = new byte[16];
+        byte[] key = new byte[16];
+        Cipher cipher = Cipher.getInstance(AES_GCM, "BC");
+        AlgorithmParameters param = AlgorithmParameters.getInstance("GCM");
+        param.init(new byte[] {
+            (byte) 48,    // DER encoding : tag_Sequence
+            (byte) 14,    // DER encoding : total length
+            (byte) 4,     // DER encoding : tag_OctetString
+            (byte) 12,    // DER encoding : counter length
+            // Note that IV's size 12 bytes is recommended, but authentication tag size should be 16
+            // bytes.
+            (byte) 0, (byte) 0, (byte) 0, (byte) 0, (byte) 0, (byte) 0,
+            (byte) 0, (byte) 0, (byte) 0, (byte) 0, (byte) 0, (byte) 0 });
+        cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, AES), param);
+        byte[] ciphertext = cipher.update(input);
+        byte[] tag = cipher.doFinal();
+        assertEquals(16, tag.length);
+    }
+
     public void testAES_ECB_PKCS5Padding_ShortBuffer_Failure() throws Exception {
         for (String provider : AES_PROVIDERS) {
             testAES_ECB_PKCS5Padding_ShortBuffer_Failure(provider);
@@ -3514,5 +3536,73 @@ public final class CipherTest extends TestCase {
         Cipher cipher = Cipher.getInstance("RSA/NONE/OAEPPadding");
         cipher.init(Cipher.ENCRYPT_MODE, keyGen.generateKeyPair().getPublic());
         cipher.doFinal(new byte[] {1,2,3,4});
+    }
+
+    /*
+     * Check that two AAD updates are equivalent to one.
+     * http://b/27371173
+     */
+    public void test_AESGCMNoPadding_UpdateAADTwice_Success() throws Exception {
+        SecretKeySpec key = new SecretKeySpec(new byte[16], "AES");
+        GCMParameterSpec spec = new GCMParameterSpec(128, new byte[12]);
+        Cipher c1 = Cipher.getInstance("AES/GCM/NoPadding");
+        Cipher c2 = Cipher.getInstance("AES/GCM/NoPadding");
+
+        c1.init(Cipher.ENCRYPT_MODE, key, spec);
+        c1.updateAAD(new byte[] {
+                0x01, 0x02, 0x03, 0x04, 0x05,
+        });
+        c1.updateAAD(new byte[] {
+                0x06, 0x07, 0x08, 0x09, 0x10,
+        });
+
+        c2.init(Cipher.ENCRYPT_MODE, key, spec);
+        c2.updateAAD(new byte[] {
+                0x01, 0x02, 0x03, 0x04, 0x05,
+                0x06, 0x07, 0x08, 0x09, 0x10,
+        });
+
+        assertEquals(Arrays.toString(c1.doFinal()), Arrays.toString(c2.doFinal()));
+    }
+
+    /*
+     * Check that GCM encryption with old and new instances update correctly.
+     * http://b/26694388
+     */
+    public void test_AESGCMNoPadding_Reuse_Success() throws Exception {
+        SecretKeySpec key = new SecretKeySpec(new byte[16], "AES");
+        GCMParameterSpec spec = new GCMParameterSpec(128, new byte[12]);
+        Cipher c1 = Cipher.getInstance("AES/GCM/NoPadding");
+        Cipher c2 = Cipher.getInstance("AES/GCM/NoPadding");
+
+        // Pollute the c1 cipher with AAD
+        c1.init(Cipher.ENCRYPT_MODE, key, spec);
+        c1.updateAAD(new byte[] {
+                0x01, 0x02, 0x03, 0x04, 0x05,
+        });
+
+        // Now init each again and make sure the outputs are the same
+        c1.init(Cipher.ENCRYPT_MODE, key, spec);
+        c2.init(Cipher.ENCRYPT_MODE, key, spec);
+
+        byte[] aad = new byte[] {
+                0x10, 0x20, 0x30, 0x40, 0x50, 0x60,
+        };
+        c1.updateAAD(aad);
+        c2.updateAAD(aad);
+
+        assertEquals(Arrays.toString(c1.doFinal()), Arrays.toString(c2.doFinal()));
+
+        // .doFinal should also reset the state, so check that as well.
+        byte[] aad2 = new byte[] {
+                0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        };
+
+        Cipher c3 = Cipher.getInstance("AES/GCM/NoPadding");
+        c3.init(Cipher.ENCRYPT_MODE, key, spec);
+
+        c1.updateAAD(aad2);
+        c3.updateAAD(aad2);
+        assertEquals(Arrays.toString(c1.doFinal()), Arrays.toString(c3.doFinal()));
     }
 }
